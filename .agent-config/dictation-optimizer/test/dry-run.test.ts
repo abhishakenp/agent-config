@@ -14,8 +14,6 @@ import { join } from "node:path";
 import { makeAlways } from "../scripts/always.ts";
 
 const SCRIPT = join(import.meta.dir, "..", "scripts", "optimize-dictation.ts");
-const ANALYZE = join(homedir(), ".agent-config", "skills", "session-efficiency", "scripts", "analyze-sessions.ts");
-const EFF_REPORT = join(homedir(), ".iris", "telemetry", "session-efficiency.md");
 const WATCHED = [join(homedir(), ".iris", "telemetry"), join(homedir(), ".agent-config")];
 
 /** Every file under the watched dirs, keyed by absolute path with size and mtime. */
@@ -41,12 +39,6 @@ const snapshot = () => {
   return out;
 };
 
-const ensureEffReport = () => {
-  // Writes only when the report does not exist yet (first run ever); from then
-  // on this suite writes nothing under the watched dirs.
-  if (!existsSync(EFF_REPORT)) execFileSync("bun", [ANALYZE, "--days", "7"], { encoding: "utf-8" });
-};
-
 const corrections = (dir: string, body: unknown = [{ term: "Iris", mistranscriptions: ["Irish"], frequency: 53 }]) => {
   const f = join(dir, "corrections.json");
   writeFileSync(f, JSON.stringify(body));
@@ -68,11 +60,15 @@ const fakeHome = () => {
 };
 
 test("dry-run performs zero writes to ~/.iris/telemetry or ~/.agent-config", () => {
-  ensureEffReport();
+  // Fake HOME (session report + glossary), so the apply target exists on any host.
+  const home = fakeHome();
   const before = snapshot();
   const f = corrections(mkdtempSync(join(tmpdir(), "do-corr-")));
   // --apply included: the harshest path, which in dry-run must still do nothing real.
-  const out = execFileSync("bun", [SCRIPT, "--days", "7", "--dry-run", "--apply", "--corrections", f], { encoding: "utf-8" });
+  const out = execFileSync("bun", [SCRIPT, "--days", "7", "--dry-run", "--apply", "--corrections", f], {
+    encoding: "utf-8",
+    env: { ...process.env, HOME: home },
+  });
   const after = snapshot();
   expect(after).toEqual(before);
   // Every external call is announced as a mock, the write as a would-write.
@@ -109,9 +105,8 @@ test("a mocked always call is logged, not executed", () => {
   const bin = join(tmp, "always");
   writeFileSync(bin, `#!/bin/sh\ntouch "${marker}"\n`);
   chmodSync(bin, 0o755);
-  ensureEffReport();
   execFileSync("bun", [SCRIPT, "--dry-run", "--apply", "--corrections", corrections(tmp)], {
-    env: { ...process.env, ALWAYS_BIN: bin },
+    env: { ...process.env, HOME: fakeHome(), ALWAYS_BIN: bin },
     encoding: "utf-8",
   });
   expect(existsSync(marker)).toBe(false);
